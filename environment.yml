@@ -1,0 +1,43 @@
+name: qdiff
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.8.5
+  - pip=20.3
+  - pytorch
+  - pytorch-cuda=11.7 
+  - torchvision
+  - torchaudio
+  - numpy
+  - pip:
+    - albumentations==0.4.3
+    - diffusers==0.3.0
+    - pudb==2019.2
+    - invisible-watermark
+    - imageio==2.9.0
+    - imageio-ffmpeg==0.4.2
+    - test-tube>=0.7.5
+    - streamlit>=0.73.1
+    - torch-fidelity==0.3.0
+    - torchmetrics==0.6.0
+    - streamlit-drawable-canvas==0.8
+    - einops==0.3.0
+    - kornia==0.6.9
+    - lmdb==1.3.0
+    - natsort==8.3.1
+    - omegaconf==2.1.1
+    - opencv_python==4.1.2.30
+    - opencv_python_headless==4.6.0.66
+    - pandas==1.4.2
+    - Pillow==9.0.1
+    - pytorch_lightning==1.4.2
+    - PyYAML==6.0
+    - six==1.16.0
+    - tqdm==4.64.0
+    - transformers==4.22.2
+    - omegaconf
+    - git+https://github.com/openai/CLIP.git@main#egg=clip
+    - -e git+https://github.com/CompVis/taming-transformers.git@master#egg=taming-transformers
+    - -e .
