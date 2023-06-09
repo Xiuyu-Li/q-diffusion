@@ -1,5 +1,5 @@
 
-# Q-Diffusion: Quantizing Diffusion Models
+# Q-Diffusion: Quantizing Diffusion Models [[Paper](http://arxiv.org/abs/2302.04304)]
 Q-diffusion is able to quantize full-precision unconditional diffusion models into 4-bit while maintaining comparable performance (small FID change of at most 2.34 compared to >100 for traditional PTQ) in a training-free manner.
 ![example_lsun](https://github.com/Xiuyu-Li/q-diffusion-dev/blob/main/assets/example_lsun.png)
 
@@ -64,10 +64,10 @@ python scripts/txt2img.py --prompt <prompt. e.g. "a puppet wearing a hat"> --plm
 If you find this work useful in your research, please consider citing our paper:
 
 ```bibtex
-@article{li2023q,
+@article{li2023qdiffusion,
   title={Q-Diffusion: Quantizing Diffusion Models},
-  author={Li, Xiuyu and Lian, Long and Liu, Yijiang and Yang, Huanrui and Dong, Zhen and Kang, Daniel and Zhang, Shanghang and Keutzer, Kurt},
-  journal={arXiv preprint arXiv:2302.04304},
+  author={Li, Xiuyu and Liu, Yijiang and Lian, Long and Yang, Huanrui and Dong, Zhen and Kang, Daniel and Zhang, Shanghang and Keutzer, Kurt},
+  journal={arXiv},
   year={2023}
 }
 ```
