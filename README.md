@@ -1,16 +1,16 @@
 
 # Q-Diffusion: Quantizing Diffusion Models [[Paper](http://arxiv.org/abs/2302.04304)]
 Q-diffusion is able to quantize full-precision unconditional diffusion models into 4-bit while maintaining comparable performance (small FID change of at most 2.34 compared to >100 for traditional PTQ) in a training-free manner.
-![example_lsun](https://github.com/Xiuyu-Li/q-diffusion-dev/blob/main/assets/example_lsun.png)
+![example_lsun](assets/example_lsun.png)
 
 Our approach can also be plugged into text-guided image generation, where we run stable diffusion in 4-bit weights and achieve high generation quality for the first time.
-![example_sd](https://github.com/Xiuyu-Li/q-diffusion-dev/blob/main/assets/example_sd.png)
+![example_sd](assets/example_sd.png)
 
 *This repository provides the official implementation for Q-Diffusion inference with calibrated (simulated) quantized checkpoints. The calibration code will be released in the future.*
 
 ## Overview
 
-![teaser](https://github.com/Xiuyu-Li/q-diffusion-dev/blob/main/assets/teaser.png)  
+![teaser](assets/teaser.png)  
 Diffusion models have achieved significant success in image synthesis by iteratively estimating noise using deep neural networks. However, the slow inference and the memory and computational intensity of the noise estimation model hinder the efficient implementation of diffusion models. Although post-training quantization (PTQ) is considered a go-to compression method for other tasks, it does not work seamlessly with diffusion models. We propose a novel PTQ method specifically designed for the unique multi-timestep pipeline and model architecture of diffusion models, which compresses the noise estimation network to accelerate the generation process. We identify the primary challenge of diffusion model quantization as the changing output distributions of noise estimation networks over multiple time steps and the bimodal activation distribution of the shortcut layers within the noise estimation network. We address these challenges with timestep-aware calibration and split shortcut quantization in this work.
 ## Getting Started
 
