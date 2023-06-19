@@ -1,5 +1,5 @@
 
-# Q-Diffusion: Quantizing Diffusion Models [[Paper](http://arxiv.org/abs/2302.04304)]
+# Q-Diffusion: Quantizing Diffusion Models [[website](https://xiuyuli.com/qdiffusion/)] [[paper](http://arxiv.org/abs/2302.04304)]
 Q-diffusion is able to quantize full-precision unconditional diffusion models into 4-bit while maintaining comparable performance (small FID change of at most 2.34 compared to >100 for traditional PTQ) in a training-free manner.
 ![example_lsun](assets/example_lsun.png)
 
