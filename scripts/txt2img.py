@@ -1,4 +1,4 @@
-import argparse, os, datetime, yaml, gc
+import argparse, os, datetime, gc, yaml
 import logging
 import cv2
 import numpy as np
@@ -289,7 +289,7 @@ def main():
         help="path for calibrated model ckpt"
     )
     parser.add_argument(
-        "--cali_name", type=str, default="sd_coco_sample1024_allst.pt",
+        "--cali_data_path", type=str, default="sd_coco_sample1024_allst.pt",
         help="calibration dataset name"
     )
     parser.add_argument(
@@ -394,7 +394,7 @@ def main():
                 resume_cali_model(qnn, opt.cali_ckpt, cali_data, opt.quant_act, "qdiff", cond=opt.cond)
             else:
                 logger.info(f"Sampling data from {opt.cali_st} timesteps for calibration")
-                sample_data = torch.load(opt.cali_name)
+                sample_data = torch.load(opt.cali_data_path)
                 cali_data = get_train_samples(opt, sample_data, opt.ddim_steps)
                 del(sample_data)
                 gc.collect()

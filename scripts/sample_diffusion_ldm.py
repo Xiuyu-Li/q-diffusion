@@ -1,4 +1,4 @@
-import argparse, os, sys, glob, datetime, yaml, gc
+import argparse, os, sys, gc, glob, datetime, yaml
 import logging
 import time
 import numpy as np
@@ -240,7 +240,7 @@ def get_parser():
         "--custom_steps",
         type=int,
         nargs="?",
-        help="number of steps for ddim and fastdpm sampling",
+        help="number of steps for ddim and fast dpm sampling",
         default=50
     )
     parser.add_argument(
@@ -303,7 +303,7 @@ def get_parser():
         help="path for calibrated model ckpt"
     )
     parser.add_argument(
-        "--cali_name", type=str, default="sd_coco_sample1024_allst.pt",
+        "--cali_data_path", type=str, default="sd_coco_sample1024_allst.pt",
         help="calibration dataset name"
     )
     parser.add_argument(
@@ -479,7 +479,7 @@ if __name__ == "__main__":
                 resume_cali_model(qnn, opt.cali_ckpt, cali_data, opt.quant_act, "qdiff", cond=False)
             else:
                 logger.info(f"Sampling data from {opt.cali_st} timesteps for calibration")
-                sample_data = torch.load(opt.cali_name)
+                sample_data = torch.load(opt.cali_data_path)
                 cali_data = get_train_samples(opt, sample_data)
                 del(sample_data)
                 gc.collect()
