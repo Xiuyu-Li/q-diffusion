@@ -1,6 +1,5 @@
-import argparse, os, sys, glob, datetime, yaml
+import argparse, os, sys, glob, datetime, yaml, gc
 import logging
-import torch
 import time
 import numpy as np
 from tqdm import trange
@@ -8,13 +7,20 @@ from pytorch_lightning import seed_everything
 from omegaconf import OmegaConf
 from PIL import Image
 
+import torch
+import torch.nn as nn
 import sys
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 from ldm.util import instantiate_from_config
 
-from qdiff import QuantModel
-from qdiff.utils import resume_cali_model
+from qdiff import (
+    QuantModel, QuantModule, BaseQuantBlock, 
+    block_reconstruction, layer_reconstruction,
+)
+from qdiff.adaptive_rounding import AdaRoundQuantizer
+from qdiff.quant_layer import UniformAffineQuantizer
+from qdiff.utils import resume_cali_model, get_train_samples
 
 logger = logging.getLogger(__name__)
 
@@ -186,10 +192,10 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-r",
-        "--resume",
+        "--resume_base",
         type=str,
         nargs="?",
-        help="load from logdir or checkpoint in logdir",
+        help="load fp32 base model from logdir or checkpoint in logdir (will deprecate after direct quantized model loading implemented)",
     )
     parser.add_argument(
         "-n",
@@ -271,12 +277,62 @@ def get_parser():
     )
     # qdiff specific configs
     parser.add_argument(
+        "--cali_st", type=int, default=1, 
+        help="number of timesteps used for calibration"
+    )
+    parser.add_argument(
+        "--cali_batch_size", type=int, default=32, 
+        help="batch size for qdiff reconstruction"
+    )
+    parser.add_argument(
+        "--cali_n", type=int, default=1024, 
+        help="number of samples for each timestep for qdiff reconstruction"
+    )
+    parser.add_argument(
+        "--cali_iters", type=int, default=20000, 
+        help="number of iterations for each qdiff reconstruction"
+    )
+    parser.add_argument('--cali_iters_a', default=5000, type=int, 
+        help='number of iteration for LSQ')
+    parser.add_argument('--cali_lr', default=4e-4, type=float, 
+        help='learning rate for LSQ')
+    parser.add_argument('--cali_p', default=2.4, type=float, 
+        help='L_p norm minimization for LSQ')
+    parser.add_argument(
         "--cali_ckpt", type=str,
         help="path for calibrated model ckpt"
     )
     parser.add_argument(
+        "--cali_name", type=str, default="sd_coco_sample1024_allst.pt",
+        help="calibration dataset name"
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="resume the calibrated qdiff model"
+    )
+    parser.add_argument(
+        "--resume_w", action="store_true",
+        help="resume the calibrated qdiff model weights only"
+    )
+    parser.add_argument(
+        "--cond", action="store_true",
+        help="whether to use conditional guidance"
+    )
+    parser.add_argument(
         "--a_sym", action="store_true",
-        help="act quantizers use symmetric quantization"
+        help="act quantizers use symmetric quantization (empirically helpful in some cases)"
+    )
+    parser.add_argument(
+        "--a_min_max", action="store_true",
+        help="act quantizers initialize with min-max (empirically helpful in some cases)"
+    )
+    parser.add_argument(
+        "--running_stat", action="store_true",
+        help="use running statistics for act quantizers"
+    )
+    parser.add_argument(
+        "--rs_sm_only", action="store_true",
+        help="use running statistics only for softmax act quantizers"
     )
     parser.add_argument(
         "--sm_abit",type=int, default=8,
@@ -327,22 +383,22 @@ if __name__ == "__main__":
     # fix random seed
     seed_everything(opt.seed)
 
-    if not os.path.exists(opt.resume):
-        raise ValueError("Cannot find {}".format(opt.resume))
-    if os.path.isfile(opt.resume):
+    if not os.path.exists(opt.resume_base):
+        raise ValueError("Cannot find {}".format(opt.resume_base))
+    if os.path.isfile(opt.resume_base):
         # paths = opt.resume.split("/")
         try:
-            logdir = '/'.join(opt.resume.split('/')[:-1])
+            logdir = '/'.join(opt.resume_base.split('/')[:-1])
             # idx = len(paths)-paths[::-1].index("logs")+1
             print(f'Logdir is {logdir}')
         except ValueError:
-            paths = opt.resume.split("/")
+            paths = opt.resume_base.split("/")
             idx = -2  # take a guess: path/to/logdir/checkpoints/model.ckpt
             logdir = "/".join(paths[:idx])
-        ckpt = opt.resume
+        ckpt = opt.resume_base
     else:
-        assert os.path.isdir(opt.resume), f"{opt.resume} is not a directory"
-        logdir = opt.resume.rstrip("/")
+        assert os.path.isdir(opt.resume_base), f"{opt.resume_base} is not a directory"
+        logdir = opt.resume_base.rstrip("/")
         ckpt = os.path.join(logdir, "model.ckpt")
 
     base_configs = sorted(glob.glob(os.path.join(logdir, "config.yaml")))
@@ -394,10 +450,21 @@ if __name__ == "__main__":
     model.model_ema.copy_to(model.model)
 
     # print(model.model)
+    assert(not opt.cond)
     if opt.ptq:
         if opt.quant_mode == 'qdiff':
-            wq_params = {'n_bits': opt.weight_bit, 'channel_wise': True, 'scale_method': 'max'}
-            aq_params = {'n_bits': opt.act_bit, 'symmetric': opt.a_sym, 'channel_wise': False, 'scale_method': 'max', 'leaf_param': opt.quant_act}
+            a_scale_method = 'mse' if not opt.a_min_max else 'max'
+            wq_params = {'n_bits': opt.weight_bit, 'channel_wise': True, 'scale_method': 'mse'}
+            aq_params = {
+                'n_bits': opt.act_bit, 'symmetric': opt.a_sym, 'channel_wise': False, 
+                'scale_method': a_scale_method, 'leaf_param': opt.quant_act
+            }
+            if opt.resume:
+                logger.info('Load with min-max quick initialization')
+                wq_params['scale_method'] = 'max'
+                aq_params['scale_method'] = 'max'
+            if opt.resume_w:
+                wq_params['scale_method'] = 'max'
             # with model.ema_scope("Quantizing", restore=False):
             qnn = QuantModel(
                 model=model.model.diffusion_model, weight_quant_params=wq_params, act_quant_params=aq_params,
@@ -405,10 +472,98 @@ if __name__ == "__main__":
             qnn.cuda()
             qnn.eval()
 
-            image_size = config.model.params.image_size
-            channels = config.model.params.channels
-            cali_data = (torch.randn(1, channels, image_size, image_size), torch.randint(0, 1000, (1,)))
-            resume_cali_model(qnn, opt.cali_ckpt, cali_data, opt.quant_act, "qdiff", cond=False)
+            if opt.resume:
+                image_size = config.model.params.image_size
+                channels = config.model.params.channels
+                cali_data = (torch.randn(1, channels, image_size, image_size), torch.randint(0, 1000, (1,)))
+                resume_cali_model(qnn, opt.cali_ckpt, cali_data, opt.quant_act, "qdiff", cond=False)
+            else:
+                logger.info(f"Sampling data from {opt.cali_st} timesteps for calibration")
+                sample_data = torch.load(opt.cali_name)
+                cali_data = get_train_samples(opt, sample_data)
+                del(sample_data)
+                gc.collect()
+                logger.info(f"Calibration data shape: {cali_data[0].shape} {cali_data[1].shape}")
+                
+                cali_xs, cali_ts = cali_data
+                if opt.resume_w:
+                    resume_cali_model(qnn, opt.cali_ckpt, cali_data, False, cond=False)
+                else:
+                    logger.info("Initializing weight quantization parameters")
+                    qnn.set_quant_state(True, False) # enable weight quantization, disable act quantization
+                    _ = qnn(cali_xs[:8].cuda(), cali_ts[:8].cuda())
+                    logger.info("Initializing has done!")
+
+                # Kwargs for weight rounding calibration
+                kwargs = dict(cali_data=cali_data, batch_size=opt.cali_batch_size, 
+                            iters=opt.cali_iters, weight=0.01, asym=True, b_range=(20, 2),
+                            warmup=0.2, act_quant=False, opt_mode='mse')
+
+                def recon_model(model):
+                    """
+                    Block reconstruction. For the first and last layers, we can only apply layer reconstruction.
+                    """
+                    for name, module in model.named_children():
+                        logger.info(f"{name} {isinstance(module, BaseQuantBlock)}")
+                        if isinstance(module, QuantModule):
+                            if module.ignore_reconstruction is True:
+                                logger.info('Ignore reconstruction of layer {}'.format(name))
+                                continue
+                            else:
+                                logger.info('Reconstruction for layer {}'.format(name))
+                                layer_reconstruction(qnn, module, **kwargs)
+                        elif isinstance(module, BaseQuantBlock):
+                            if module.ignore_reconstruction is True:
+                                logger.info('Ignore reconstruction of block {}'.format(name))
+                                continue
+                            else:
+                                logger.info('Reconstruction for block {}'.format(name))
+                                block_reconstruction(qnn, module, **kwargs)
+                        else:
+                            recon_model(module)
+
+                if not opt.resume_w:
+                    logger.info("Doing weight calibration")
+                    recon_model(qnn)
+                    qnn.set_quant_state(weight_quant=True, act_quant=False)
+                if opt.quant_act:
+                    logger.info("UNet model")
+                    logger.info(model.model)                    
+                    logger.info("Doing activation calibration")   
+                    # Initialize activation quantization parameters
+                    qnn.set_quant_state(True, True)
+                    with torch.no_grad():
+                        # inds = np.random.choice(cali_xs.shape[0], 64, replace=False)
+                        _ = qnn(cali_xs[:64].cuda(), cali_ts[:64].cuda())
+                        # _ = qnn(cali_xs[inds].cuda(), cali_ts[inds].cuda())
+                        
+                        if opt.running_stat:
+                            logger.info('Running stat for activation quantization')
+                            qnn.set_running_stat(True)
+                            for i in trange(int(cali_xs.size(0) / 64)):
+                                _ = qnn(cali_xs[i * 64:(i + 1) * 64].cuda(), 
+                                    cali_ts[i * 64:(i + 1) * 64].cuda())
+                            qnn.set_running_stat(False)
+                    
+                    kwargs = dict(
+                        cali_data=cali_data, iters=opt.cali_iters_a, act_quant=True, 
+                        opt_mode='mse', lr=opt.cali_lr, p=opt.cali_p)   
+                    recon_model(qnn)
+                    qnn.set_quant_state(weight_quant=True, act_quant=True)   
+
+                logger.info("Saving calibrated quantized UNet model")
+                for m in qnn.model.modules():
+                    if isinstance(m, AdaRoundQuantizer):
+                        m.zero_point = nn.Parameter(m.zero_point)
+                        m.delta = nn.Parameter(m.delta)
+                    elif isinstance(m, UniformAffineQuantizer) and opt.quant_act:
+                        if m.zero_point is not None:
+                            if not torch.is_tensor(m.zero_point):
+                                m.zero_point = nn.Parameter(torch.tensor(float(m.zero_point)))
+                            else:
+                                m.zero_point = nn.Parameter(m.zero_point)
+                torch.save(qnn.state_dict(), os.path.join(logdir, "ckpt.pth"))         
+
             model.model.diffusion_model = qnn
 
 
