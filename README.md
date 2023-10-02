@@ -54,9 +54,9 @@ python scripts/sample_diffusion_ldm.py -r models/ldm/lsun_churches256/model.ckpt
 
 # Stable Diffusion
 # 4/8-bit weights-only
-python scripts/txt2img.py --prompt <prompt. e.g. "a puppet wearing a hat"> --plms --cond --ptq --weight_bit <4 or 8> --quant_mode qdiff --no_grad_ckpt --split --n_samples 5 --outdir <output_path> --cali_ckpt <quantized_ckpt_path>
+python scripts/txt2img.py --prompt <prompt. e.g. "a puppy wearing a hat"> --plms --cond --ptq --weight_bit <4 or 8> --quant_mode qdiff --no_grad_ckpt --split --n_samples 5 --outdir <output_path> --cali_ckpt <quantized_ckpt_path>
 # 4/8-bit weights, 8-bit activations (with 16-bit for attention matrices after softmax)
-python scripts/txt2img.py --prompt <prompt. e.g. "a puppet wearing a hat"> --plms --cond --ptq --weight_bit <4 or 8> --quant_mode qdiff --no_grad_ckpt --split --n_samples 5 --quant_act --act_bit 8 --sm_abit 16 --outdir <output_path> --cali_ckpt <quantized_ckpt_path>
+python scripts/txt2img.py --prompt <prompt. e.g. "a puppy wearing a hat"> --plms --cond --ptq --weight_bit <4 or 8> --quant_mode qdiff --no_grad_ckpt --split --n_samples 5 --quant_act --act_bit 8 --sm_abit 16 --outdir <output_path> --cali_ckpt <quantized_ckpt_path>
 ```
 
 ## Citation
@@ -64,11 +64,13 @@ python scripts/txt2img.py --prompt <prompt. e.g. "a puppet wearing a hat"> --plm
 If you find this work useful in your research, please consider citing our paper:
 
 ```bibtex
-@article{li2023qdiffusion,
-  title={Q-Diffusion: Quantizing Diffusion Models},
+@InProceedings{Li_2023_ICCV,
   author={Li, Xiuyu and Liu, Yijiang and Lian, Long and Yang, Huanrui and Dong, Zhen and Kang, Daniel and Zhang, Shanghang and Keutzer, Kurt},
-  journal={arXiv},
-  year={2023}
+  title={Q-Diffusion: Quantizing Diffusion Models},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+  month={October},
+  year={2023},
+  pages={17535-17545}
 }
 ```
 
