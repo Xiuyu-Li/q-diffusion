@@ -231,8 +231,7 @@ class Diffusion(object):
                                     m.zero_point = nn.Parameter(torch.tensor(float(m.zero_point)))
                                 else:
                                     m.zero_point = nn.Parameter(m.zero_point)
-                    torch.save(qnn.state_dict(), os.path.join(
-                            self.args.log_path.split("ddim_cifar.log")[0], "ckpt.pth"))
+                    torch.save(qnn.state_dict(), os.path.join(self.args.logdir, "ckpt.pth"))
 
                 model = qnn
 
@@ -506,6 +505,7 @@ if __name__ == "__main__":
     # setup logger
     logdir = os.path.join(args.logdir, "samples", now)
     os.makedirs(logdir)
+    args.logdir = logdir
     log_path = os.path.join(logdir, "run.log")
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
