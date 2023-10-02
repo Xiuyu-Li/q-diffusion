@@ -84,7 +84,7 @@ Note that using different hyperparameters for calibration may result in slightly
 If you find this work useful in your research, please consider citing our paper:
 
 ```bibtex
-@InProceedings{Li_2023_ICCV,
+@InProceedings{li2023qdiffusion,
   author={Li, Xiuyu and Liu, Yijiang and Lian, Long and Yang, Huanrui and Dong, Zhen and Kang, Daniel and Zhang, Shanghang and Keutzer, Kurt},
   title={Q-Diffusion: Quantizing Diffusion Models},
   booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
