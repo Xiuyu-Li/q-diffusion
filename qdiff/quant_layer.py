@@ -87,6 +87,27 @@ class UniformAffineQuantizer(nn.Module):
             x_quant = torch.clamp(x_int, 0, self.n_levels - 1)
         x_dequant = (x_quant - self.zero_point) * self.delta
         return x_dequant
+    
+    def act_momentum_update(self, x: torch.Tensor, act_range_momentum: float = 0.95):
+        assert(self.inited)
+        assert(self.leaf_param)
+
+        x_min = x.data.min()
+        x_max = x.data.max()
+        self.x_min = self.x_min * act_range_momentum + x_min * (1 - act_range_momentum)
+        self.x_max = self.x_max * act_range_momentum + x_max * (1 - act_range_momentum)
+
+        if self.sym:
+            # x_min, x_max = -x_absmax if x_min < 0 else 0, x_absmax
+            delta = torch.max(self.x_min.abs(), self.x_max.abs()) / self.n_levels
+        else:
+            delta = (self.x_max - self.x_min) / (self.n_levels - 1) if not self.always_zero \
+                else self.x_max / (self.n_levels - 1)
+        
+        delta = torch.clamp(delta, min=1e-8)
+        if not self.sym:
+            self.zero_point = (-self.x_min / delta).round() if not (self.sym or self.always_zero) else 0
+        self.delta = torch.nn.Parameter(delta)
 
     def init_quantization_scale(self, x: torch.Tensor, channel_wise: bool = False):
         delta, zero_point = None, None

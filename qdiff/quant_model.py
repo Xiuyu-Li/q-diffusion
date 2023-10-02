@@ -67,6 +67,24 @@ class QuantModel(nn.Module):
 
     def forward(self, x, timesteps=None, context=None):
         return self.model(x, timesteps, context)
+    
+    def set_running_stat(self, running_stat: bool, sm_only=False):
+        for m in self.model.modules():
+            if isinstance(m, QuantBasicTransformerBlock):
+                if sm_only:
+                    m.attn1.act_quantizer_w.running_stat = running_stat
+                    m.attn2.act_quantizer_w.running_stat = running_stat
+                else:
+                    m.attn1.act_quantizer_q.running_stat = running_stat
+                    m.attn1.act_quantizer_k.running_stat = running_stat
+                    m.attn1.act_quantizer_v.running_stat = running_stat
+                    m.attn1.act_quantizer_w.running_stat = running_stat
+                    m.attn2.act_quantizer_q.running_stat = running_stat
+                    m.attn2.act_quantizer_k.running_stat = running_stat
+                    m.attn2.act_quantizer_v.running_stat = running_stat
+                    m.attn2.act_quantizer_w.running_stat = running_stat
+            if isinstance(m, QuantModule) and not sm_only:
+                m.set_running_stat(running_stat)
 
     def set_grad_ckpt(self, grad_ckpt: bool):
         for name, m in self.model.named_modules():

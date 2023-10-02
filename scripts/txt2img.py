@@ -1,7 +1,6 @@
-import argparse, os, datetime, yaml
+import argparse, os, datetime, gc, yaml
 import logging
 import cv2
-import torch
 import numpy as np
 from omegaconf import OmegaConf
 from PIL import Image
@@ -12,15 +11,21 @@ from einops import rearrange
 from torchvision.utils import make_grid
 import time
 from pytorch_lightning import seed_everything
+import torch
+import torch.nn as nn
 from torch import autocast
 from contextlib import nullcontext
 
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
-from qdiff import QuantModel
-from qdiff.utils import resume_cali_model
-
+from qdiff import (
+    QuantModel, QuantModule, BaseQuantBlock, 
+    block_reconstruction, layer_reconstruction,
+)
+from qdiff.adaptive_rounding import AdaRoundQuantizer
+from qdiff.quant_layer import UniformAffineQuantizer
+from qdiff.utils import resume_cali_model, get_train_samples
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from transformers import AutoFeatureExtractor
 
@@ -258,8 +263,42 @@ def main():
 
     # qdiff specific configs
     parser.add_argument(
+        "--cali_st", type=int, default=1, 
+        help="number of timesteps used for calibration"
+    )
+    parser.add_argument(
+        "--cali_batch_size", type=int, default=32, 
+        help="batch size for qdiff reconstruction"
+    )
+    parser.add_argument(
+        "--cali_n", type=int, default=1024, 
+        help="number of samples for each timestep for qdiff reconstruction"
+    )
+    parser.add_argument(
+        "--cali_iters", type=int, default=20000, 
+        help="number of iterations for each qdiff reconstruction"
+    )
+    parser.add_argument('--cali_iters_a', default=5000, type=int, 
+        help='number of iteration for LSQ')
+    parser.add_argument('--cali_lr', default=4e-4, type=float, 
+        help='learning rate for LSQ')
+    parser.add_argument('--cali_p', default=2.4, type=float, 
+        help='L_p norm minimization for LSQ')
+    parser.add_argument(
         "--cali_ckpt", type=str,
         help="path for calibrated model ckpt"
+    )
+    parser.add_argument(
+        "--cali_data_path", type=str, default="sd_coco_sample1024_allst.pt",
+        help="calibration dataset name"
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="resume the calibrated qdiff model"
+    )
+    parser.add_argument(
+        "--resume_w", action="store_true",
+        help="resume the calibrated qdiff model weights only"
     )
     parser.add_argument(
         "--cond", action="store_true",
@@ -272,6 +311,14 @@ def main():
     parser.add_argument(
         "--split", action="store_true",
         help="use split strategy in skip connection"
+    )
+    parser.add_argument(
+        "--running_stat", action="store_true",
+        help="use running statistics for act quantizers"
+    )
+    parser.add_argument(
+        "--rs_sm_only", action="store_true",
+        help="use running statistics only for softmax act quantizers"
     )
     parser.add_argument(
         "--sm_abit",type=int, default=8,
@@ -323,9 +370,14 @@ def main():
         if opt.split:
             setattr(sampler.model.model.diffusion_model, "split", True)
         if opt.quant_mode == 'qdiff':
-            wq_params = {'n_bits': opt.weight_bit, 'channel_wise': True, 'scale_method': 'max'}
-            aq_params = {'n_bits': opt.act_bit, 'channel_wise': False, 'scale_method': 'max', 'leaf_param':  opt.quant_act}
-
+            wq_params = {'n_bits': opt.weight_bit, 'channel_wise': True, 'scale_method': 'mse'}
+            aq_params = {'n_bits': opt.act_bit, 'channel_wise': False, 'scale_method': 'mse', 'leaf_param':  opt.quant_act}
+            if opt.resume:
+                logger.info('Load with min-max quick initialization')
+                wq_params['scale_method'] = 'max'
+                aq_params['scale_method'] = 'max'
+            if opt.resume_w:
+                wq_params['scale_method'] = 'max'
             qnn = QuantModel(
                 model=sampler.model.model.diffusion_model, weight_quant_params=wq_params, act_quant_params=aq_params,
                 act_quant_mode="qdiff", sm_abit=opt.sm_abit)
@@ -337,8 +389,104 @@ def main():
                 logger.info('Not use gradient checkpointing for transformer blocks')
                 qnn.set_grad_ckpt(False)
 
-            cali_data = (torch.randn(1, 4, 64, 64), torch.randint(0, 1000, (1,)), torch.randn(1, 77, 768))
-            resume_cali_model(qnn, opt.cali_ckpt, cali_data, opt.quant_act, "qdiff", cond=opt.cond)
+            if opt.resume:
+                cali_data = (torch.randn(1, 4, 64, 64), torch.randint(0, 1000, (1,)), torch.randn(1, 77, 768))
+                resume_cali_model(qnn, opt.cali_ckpt, cali_data, opt.quant_act, "qdiff", cond=opt.cond)
+            else:
+                logger.info(f"Sampling data from {opt.cali_st} timesteps for calibration")
+                sample_data = torch.load(opt.cali_data_path)
+                cali_data = get_train_samples(opt, sample_data, opt.ddim_steps)
+                del(sample_data)
+                gc.collect()
+                logger.info(f"Calibration data shape: {cali_data[0].shape} {cali_data[1].shape} {cali_data[2].shape}")
+
+                cali_xs, cali_ts, cali_cs = cali_data
+                if opt.resume_w:
+                    resume_cali_model(qnn, opt.cali_ckpt, cali_data, False, cond=opt.cond)
+                else:
+                    logger.info("Initializing weight quantization parameters")
+                    qnn.set_quant_state(True, False) # enable weight quantization, disable act quantization
+                    _ = qnn(cali_xs[:8].cuda(), cali_ts[:8].cuda(), cali_cs[:8].cuda())
+                    logger.info("Initializing has done!") 
+                # Kwargs for weight rounding calibration
+                kwargs = dict(cali_data=cali_data, batch_size=opt.cali_batch_size, 
+                            iters=opt.cali_iters, weight=0.01, asym=True, b_range=(20, 2),
+                            warmup=0.2, act_quant=False, opt_mode='mse', cond=opt.cond)
+                
+                def recon_model(model):
+                    """
+                    Block reconstruction. For the first and last layers, we can only apply layer reconstruction.
+                    """
+                    for name, module in model.named_children():
+                        logger.info(f"{name} {isinstance(module, BaseQuantBlock)}")
+                        if name == 'output_blocks':
+                            logger.info("Finished calibrating input and mid blocks, saving temporary checkpoint...")
+                            in_recon_done = True
+                            torch.save(qnn.state_dict(), os.path.join(outpath, "ckpt.pth"))
+                        if name.isdigit() and int(name) >= 9:
+                            logger.info(f"Saving temporary checkpoint at {name}...")
+                            torch.save(qnn.state_dict(), os.path.join(outpath, "ckpt.pth"))
+                            
+                        if isinstance(module, QuantModule):
+                            if module.ignore_reconstruction is True:
+                                logger.info('Ignore reconstruction of layer {}'.format(name))
+                                continue
+                            else:
+                                logger.info('Reconstruction for layer {}'.format(name))
+                                layer_reconstruction(qnn, module, **kwargs)
+                        elif isinstance(module, BaseQuantBlock):
+                            if module.ignore_reconstruction is True:
+                                logger.info('Ignore reconstruction of block {}'.format(name))
+                                continue
+                            else:
+                                logger.info('Reconstruction for block {}'.format(name))
+                                block_reconstruction(qnn, module, **kwargs)
+                        else:
+                            recon_model(module)
+
+                if not opt.resume_w:
+                    logger.info("Doing weight calibration")
+                    recon_model(qnn)
+                    qnn.set_quant_state(weight_quant=True, act_quant=False)
+                if opt.quant_act:
+                    logger.info("UNet model")
+                    logger.info(model.model)                    
+                    logger.info("Doing activation calibration")
+                    # Initialize activation quantization parameters
+                    qnn.set_quant_state(True, True)
+                    with torch.no_grad():
+                        inds = np.random.choice(cali_xs.shape[0], 16, replace=False)
+                        _ = qnn(cali_xs[inds].cuda(), cali_ts[inds].cuda(), cali_cs[inds].cuda())
+                        if opt.running_stat:
+                            logger.info('Running stat for activation quantization')
+                            inds = np.arange(cali_xs.shape[0])
+                            np.random.shuffle(inds)
+                            qnn.set_running_stat(True, opt.rs_sm_only)
+                            for i in trange(int(cali_xs.size(0) / 16)):
+                                _ = qnn(cali_xs[inds[i * 16:(i + 1) * 16]].cuda(), 
+                                    cali_ts[inds[i * 16:(i + 1) * 16]].cuda(),
+                                    cali_cs[inds[i * 16:(i + 1) * 16]].cuda())
+                            qnn.set_running_stat(False, opt.rs_sm_only)
+
+                    kwargs = dict(
+                        cali_data=cali_data, batch_size=opt.cali_batch_size, iters=opt.cali_iters_a, act_quant=True, 
+                        opt_mode='mse', lr=opt.cali_lr, p=opt.cali_p, cond=opt.cond)
+                    recon_model(qnn)
+                    qnn.set_quant_state(weight_quant=True, act_quant=True)
+                
+                logger.info("Saving calibrated quantized UNet model")
+                for m in qnn.model.modules():
+                    if isinstance(m, AdaRoundQuantizer):
+                        m.zero_point = nn.Parameter(m.zero_point)
+                        m.delta = nn.Parameter(m.delta)
+                    elif isinstance(m, UniformAffineQuantizer) and opt.quant_act:
+                        if m.zero_point is not None:
+                            if not torch.is_tensor(m.zero_point):
+                                m.zero_point = nn.Parameter(torch.tensor(float(m.zero_point)))
+                            else:
+                                m.zero_point = nn.Parameter(m.zero_point)
+                torch.save(qnn.state_dict(), os.path.join(outpath, "ckpt.pth"))
+
             sampler.model.model.diffusion_model = qnn
 
     logging.info("Creating invisible watermark encoder (see https://github.com/ShieldMnt/invisible-watermark)...")
