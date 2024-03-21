@@ -1,6 +1,6 @@
 
 # Q-Diffusion: Quantizing Diffusion Models [[website](https://xiuyuli.com/qdiffusion/)] [[paper](http://arxiv.org/abs/2302.04304)]
-**[NEW!]** Q-Diffusion is featured by [TensorRT](https://developer.nvidia.com/blog/tensorrt-accelerates-stable-diffusion-nearly-2x-faster-with-8-bit-post-training-quantization/)! Check the official [example](https://github.com/NVIDIA/TensorRT/tree/release/9.3/demo/Diffusion#faster-text-to-image-using-sdxl--int8-quantization-using-ammo). 
+**[NEW!]** Q-Diffusion is featured by NVIDIA [TensorRT](https://developer.nvidia.com/blog/tensorrt-accelerates-stable-diffusion-nearly-2x-faster-with-8-bit-post-training-quantization/)! Check out the official [example](https://github.com/NVIDIA/TensorRT/tree/release/9.3/demo/Diffusion#faster-text-to-image-using-sdxl--int8-quantization-using-ammo). 
 
 Q-diffusion is able to quantize full-precision unconditional diffusion models into 4-bit while maintaining comparable performance (small FID change of at most 2.34 compared to >100 for traditional PTQ) in a training-free manner.
 ![example_lsun](assets/example_lsun.png)
